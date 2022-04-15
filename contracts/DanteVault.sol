@@ -47,8 +47,6 @@ contract DanteVault is ERC20, Ownable, ReentrancyGuard {
     uint256 deploymentTime;
 
     address public strategist;
-    address public constant multisig = address(0x846eef31D340c1fE7D34aAd21499B427d5c12597);
-    address public constant timelock = address(0x3040398Cfd9770BA613eA7223f61cc7D27D4037C);
     bool migrated = false;
 
 

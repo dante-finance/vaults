@@ -6,6 +6,17 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./interfaces/IDanteStrategy.sol";
 
+/**
+    (                                                                        
+    )\ )                   )        (                                        
+    (()/(      )         ( /(   (    )\ )  (             )                (   
+    /(_))  ( /(   (     )\()) ))\  (()/(  )\   (     ( /(   (      (    ))\  
+    (_))_   )(_))  )\ ) (_))/ /((_)  /(_))((_)  )\ )  )(_))  )\ )   )\  /((_) 
+    |   \ ((_)_  _(_/( | |_ (_))   (_) _| (_) _(_/( ((_)_  _(_/(  ((_)(_))   
+    | |) |/ _` || ' \))|  _|/ -_)   |  _| | || ' \))/ _` || ' \))/ _| / -_)  
+    |___/ \__,_||_||_|  \__|\___|   |_|   |_||_||_| \__,_||_||_| \__| \___|  
+
+ */
 contract SentinelV2 is Ownable {
 
     // Events
@@ -18,8 +29,6 @@ contract SentinelV2 is Ownable {
     event UnpauseError(address strategy);
 
     // Dante addresses
-    address public constant multisig = address(0x846eef31D340c1fE7D34aAd21499B427d5c12597);
-    address public constant timelock = address(0x3040398Cfd9770BA613eA7223f61cc7D27D4037C);
     address[] strategy;
 
     constructor () {}

@@ -16,9 +16,23 @@ import "./interfaces/IStrategy.sol";
 import "./interfaces/IUniSwapRouter.sol";
 import "./interfaces/IUniswapV2Pair.sol";
 
+/**
+    (                                                                        
+    )\ )                   )        (                                        
+    (()/(      )         ( /(   (    )\ )  (             )                (   
+    /(_))  ( /(   (     )\()) ))\  (()/(  )\   (     ( /(   (      (    ))\  
+    (_))_   )(_))  )\ ) (_))/ /((_)  /(_))((_)  )\ )  )(_))  )\ )   )\  /((_) 
+    |   \ ((_)_  _(_/( | |_ (_))   (_) _| (_) _(_/( ((_)_  _(_/(  ((_)(_))   
+    | |) |/ _` || ' \))|  _|/ -_)   |  _| | || ' \))/ _` || ' \))/ _| / -_)  
+    |___/ \__,_||_||_|  \__|\___|   |_|   |_||_||_| \__,_||_||_| \__| \___|  
+
+ */
 contract LpAssetStrategyV2 is Ownable, Pausable {
     using SafeERC20 for IERC20;
     using SafeMath for uint256;
+
+    // max num
+    uint256 MAX_INT = 2**256 - 1;
 
     // Tokens
     address public constant wrapped = address(0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83);
@@ -34,14 +48,10 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
     address public wrappedToLp1Router;
     address public outputToWrappedRouter;
 
-    // Grim addresses
-    address public constant harvester = address(0xb8924595019aFB894150a9C7CBEc3362999b9f94);
-    address public constant treasury = address(0xfAE236b4E261278C2B84e74b4631cf7BCAFca06d);
-    address public constant multisig = address(0x846eef31D340c1fE7D34aAd21499B427d5c12597);
-    address public constant timelock = address(0x3040398Cfd9770BA613eA7223f61cc7D27D4037C);
+    // Dante addresses
+    address public treasury;
+    address public nftStaking;
     address public strategist;
-    address public grimFeeRecipient;
-    address public insuranceFund;
     address public sentinel;
     address public vault; 
 
@@ -59,15 +69,12 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
 
     // Fee structure
     uint256 public constant FEE_DIVISOR = 1000;
-    uint256 public constant PLATFORM_FEE = 40;            // 4% Platform fee 
-    uint256 public WITHDRAW_FEE = 1;                      // 0.1% of withdrawal amount
-    uint256 public BUYBACK_FEE = 500;                     // 50% of Platform fee
-    uint256 public TREASURY_FEE = 350;                    // 35% of Platform fee
-    uint256 public CALL_FEE = 130;                        // 13% of Platform fee  
-    uint256 public STRATEGIST_FEE = 0;                    //  0% of Platform fee
-    uint256 public INSURANCE_FEE = 20;                    //  2% of Platform fee
+    uint256 public constant PLATFORM_FEE = 40;            // 4% Platform fee
+    uint256 public NFT_STAKING_FEE = 0;                   // 0% at start. Once NFTs launch fee will be set to reward NFT holders
+    uint256 public TREASURY_FEE = 880;                    // 88% of Platform fees
+    uint256 public CALL_FEE = 120;                        // 12% of Platform fees
 
-    event Harvest(address indexed harvester);
+    event Harvest(address indexed caller);
     event SetGrimFeeRecipient(address indexed newRecipient);
     event SetVault(address indexed newVault);
     event SetOutputToWrappedRoute(address[] indexed route, address indexed router);
@@ -76,20 +83,20 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
     event RetireStrat(address indexed caller);
     event Panic(address indexed caller);
     event MakeCustomTxn(address indexed from, address indexed to, uint256 indexed amount);
-    event SetFees(uint256 indexed withdrawFee, uint256 indexed totalFees);
+    event SetFees(uint256 indexed totalFees);
     event SetHarvestOnDeposit(bool indexed boolean);
     event StrategistMigration(bool indexed boolean, address indexed newStrategist);
 
-    constructor(
-        address _want,
-        uint256 _poolId,
-        address _masterChef,
-        address _output,
-        address _unirouter,
-        address _sentinel,
-        address _grimFeeRecipient,
-        address _insuranceFund
-    ) public {
+    constructor(                    // EXAMPLES    
+        address _want,              // DANTE-TOMB LP
+        uint256 _poolId,            // 0
+        address _masterChef,        // GRAIL REWARD POOL
+        address _output,            // GRAIL
+        address _unirouter,         // ROUTER
+        address _sentinel,          // SENTINAL
+        address _dao,               // TREASURY
+        address _nftStaking         // NFT STAKING 
+    ) {
         strategist = msg.sender;
 
         want = _want;
@@ -98,8 +105,8 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
         output = _output;
         unirouter = _unirouter;
         sentinel = _sentinel;
-        grimFeeRecipient = _grimFeeRecipient;
-        insuranceFund = _insuranceFund;
+        treasury = _dao;
+        nftStaking = _nftStaking;
 
         outputToWrappedRoute = [output, wrapped];
         outputToWrappedRouter = unirouter;
@@ -115,19 +122,14 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
         harvestOnDeposit = false;
     }
 
-    /** @dev Sets the grim fee recipient */
-    function setGrimFeeRecipient(address _feeRecipient) external onlyOwner {
-
-        grimFeeRecipient = _feeRecipient;
-
-        emit SetGrimFeeRecipient(_feeRecipient);
-    }
-
     /** @dev Sets the vault connected to this strategy */
     function setVault(address _vault) external onlyOwner {
         vault = _vault;
-
         emit SetVault(_vault);
+    }
+
+    function setNftStaking(address _nftStaking) external onlyOwner {
+        nftStaking = _nftStaking;
     }
 
     /** @dev Function to synchronize balances before new user deposit. Can be overridden in the strategy. */
@@ -164,8 +166,7 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
             wantBal = _amount;
         }
 
-        uint256 withdrawalFeeAmount = wantBal.mul(WITHDRAW_FEE).div(FEE_DIVISOR);
-        IERC20(want).safeTransfer(vault, wantBal.sub(withdrawalFeeAmount));
+        IERC20(want).safeTransfer(vault, wantBal);
     }
 
     function harvest() external {
@@ -178,11 +179,19 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
         if (caller != vault){
             require(!Address.isContract(msg.sender), "!auth Contract Harvest");
         }
+
+        // deposit 0 so we only get the output rewards from master chef
         IMasterChef(masterchef).deposit(poolId, 0);
+        
         if (balanceOf() != 0){
+            // swap output token to WFTM and get platform fees
             chargeFees(caller);
+
+            // swap WFTM back into want LP
             addLiquidity();
         }
+
+        // re-deposit want LP into masterchef
         _deposit();
 
         emit Harvest(caller);
@@ -194,24 +203,21 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
 
         approveTxnIfNeeded(output, outputToWrappedRouter, toWrapped);
 
-        IUniSwapRouter(outputToWrappedRouter).swapExactTokensForTokensSupportingFeeOnTransferTokens(toWrapped, 0, outputToWrappedRoute, address(this), block.timestamp);                                                
+        // swapping output token for WFTM
+        IUniSwapRouter(outputToWrappedRouter).swapExactTokensForTokens(toWrapped, 0, outputToWrappedRoute, address(this), block.timestamp);                                                
 
         uint256 wrappedBal = IERC20(wrapped).balanceOf(address(this)).mul(PLATFORM_FEE).div(FEE_DIVISOR);          
                                                 
         uint256 callFeeAmount = wrappedBal.mul(CALL_FEE).div(FEE_DIVISOR);        
         IERC20(wrapped).safeTransfer(caller, callFeeAmount);
                                                       
-        uint256 grimFeeAmount = wrappedBal.mul(BUYBACK_FEE).div(FEE_DIVISOR);        
-        IERC20(wrapped).safeTransfer(grimFeeRecipient, grimFeeAmount);
-
         uint256 treasuryAmount = wrappedBal.mul(TREASURY_FEE).div(FEE_DIVISOR);        
         IERC20(wrapped).safeTransfer(treasury, treasuryAmount);
-                                                
-        uint256 strategistFee = wrappedBal.mul(STRATEGIST_FEE).div(FEE_DIVISOR);    
-        IERC20(wrapped).safeTransfer(strategist, strategistFee);
 
-        uint256 insuranceFee = wrappedBal.mul(INSURANCE_FEE).div(FEE_DIVISOR);
-        IERC20(wrapped).safeTransfer(insuranceFund, insuranceFee);
+        if(NFT_STAKING_FEE > 0) {
+            uint256 nftStakingAmount = wrappedBal.mul(NFT_STAKING_FEE).div(FEE_DIVISOR);        
+            IERC20(wrapped).safeTransfer(nftStaking, nftStakingAmount);
+        }
     }
 
     /** @dev Converts WFTM to both sides of the LP token and builds the liquidity pair */
@@ -222,10 +228,10 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
         approveTxnIfNeeded(wrapped, wrappedToLp1Router, wrappedHalf);
 
         if (lpToken0 != wrapped) {
-            IUniSwapRouter(wrappedToLp0Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(wrappedHalf, 0, wrappedToLp0Route, address(this), block.timestamp);
+            IUniSwapRouter(wrappedToLp0Router).swapExactTokensForTokens(wrappedHalf, 0, wrappedToLp0Route, address(this), block.timestamp);
         }
         if (lpToken1 != wrapped) {
-            IUniSwapRouter(wrappedToLp1Router).swapExactTokensForTokensSupportingFeeOnTransferTokens(wrappedHalf, 0, wrappedToLp1Route, address(this), block.timestamp);
+            IUniSwapRouter(wrappedToLp1Router).swapExactTokensForTokens(wrappedHalf, 0, wrappedToLp1Route, address(this), block.timestamp);
         }
 
         uint256 lp0Bal = IERC20(lpToken0).balanceOf(address(this));
@@ -278,7 +284,7 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
 
     /** @dev Pauses the strategy contract and executes the emergency withdraw function */
     function panic() public {
-        require(msg.sender == multisig || msg.sender == sentinel, "!auth");
+        require(msg.sender == sentinel, "!auth");
         pause();
         IMasterChef(masterchef).emergencyWithdraw(poolId);
 
@@ -287,14 +293,14 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
 
     /** @dev Pauses the strategy contract */
     function pause() public {
-        require(msg.sender == multisig || msg.sender == sentinel, "!auth");
+        require(msg.sender == sentinel, "!auth");
         _pause();
         _removeAllowances();
     }
 
     /** @dev Unpauses the strategy contract */
     function unpause() external {
-        require(msg.sender == multisig || msg.sender == sentinel, "!auth");
+        require(msg.sender == sentinel, "!auth");
         _unpause();
         _deposit();
     }
@@ -352,25 +358,27 @@ contract LpAssetStrategyV2 is Ownable, Pausable {
 
     /** @dev Internal function to approve the transaction if the allowance is below transaction amount */
     function approveTxnIfNeeded(address _token, address _spender, uint256 _amount) internal {
-        if (IERC20(_token).allowance(address(this), _spender) < _amount) {
-            IERC20(_token).safeApprove(_spender, 0);
-            //IERC20(_token).safeApprove(_spender, uint256(-1));
+        uint256 allowance = IERC20(_token).allowance(address(this), _spender);
+        
+        if (allowance < _amount) {
+            uint256 increase = MAX_INT - allowance;
+            IERC20(_token).safeIncreaseAllowance(_spender, increase);
         }
     }
 
     /** @dev Sets the fee amounts */
-    function setFees(uint256 newCallFee, uint256 newStratFee, uint256 newWithdrawFee, uint256 newBuyBackFee, uint256 newInsuranceFee, uint256 newTreasuryFee) external onlyOwner {
-        require(newWithdrawFee <= 10, "Exceeds max || !auth");
-        uint256 sum = newCallFee.add(newStratFee).add(newBuyBackFee).add(newInsuranceFee).add(newTreasuryFee);
+    function setFees(
+        uint256 newCallFee,
+        uint256 newTreasuryFee,
+        uint256 newNftStakingFee) external onlyOwner {
+
+        uint256 sum = newCallFee.add(newTreasuryFee).add(newNftStakingFee);
         require(sum <= FEE_DIVISOR, "Exceeds max");
 
         CALL_FEE = newCallFee;
-        STRATEGIST_FEE = newStratFee;
-        WITHDRAW_FEE = newWithdrawFee;
-        BUYBACK_FEE = newBuyBackFee;
+        NFT_STAKING_FEE = newNftStakingFee;
         TREASURY_FEE = newTreasuryFee;
-        INSURANCE_FEE = newInsuranceFee;
 
-        emit SetFees(newWithdrawFee, sum);
+        emit SetFees(sum);
     }
 }
